@@ -5,7 +5,7 @@ import math
 import time
 
 # ==========================================
-# 核心算法引擎 (整合了原 solver.py 和 utils.py)
+# 核心算法引擎 (GRASP + 逆向冗余剪枝)
 # ==========================================
 def generate_combinations(samples, r):
     return list(itertools.combinations(sorted(samples), r))
@@ -93,7 +93,6 @@ def solve(samples, k, j, s, runs=3):
 
     best_result = None
     
-    # 增加进度条提示
     progress_bar = st.progress(0)
     for run_index in range(1, runs + 1):
         raw_result = greedy_set_cover(candidates, targets, coverage_map, randomized=True)
@@ -103,7 +102,7 @@ def solve(samples, k, j, s, runs=3):
             best_result = optimized_result
             
         progress_bar.progress(run_index / runs)
-    progress_bar.empty() # 计算完成后清空进度条
+    progress_bar.empty()
 
     elapsed_seconds = time.perf_counter() - started_at
     stats = {
@@ -116,28 +115,49 @@ def solve(samples, k, j, s, runs=3):
 
 
 # ==========================================
-# Streamlit 前端交互界面
+# Streamlit 前端交互界面 (支持全参数随机与手动)
 # ==========================================
 st.set_page_config(page_title="最优样本选择系统", layout="centered")
 
 st.title("🎯 最优样本选择系统 (Web版)")
 st.markdown("基于 **GRASP (贪心随机自适应搜索)** 与逆向剪枝优化的组合设计工具。")
 
-# 侧边栏：参数输入
-st.sidebar.header("🛠️ 参数设置")
-m = st.sidebar.number_input("总体样本数 m (45-54)", 45, 54, 45)
-n = st.sidebar.number_input("选择样本数 n (7-25)", 7, 25, 9)
-k = st.sidebar.number_input("小组容量 k (4-7)", 4, 7, 6)
-j = st.sidebar.number_input("覆盖参考值 j (s ≤ j ≤ k)", 3, k, 4)
-s = st.sidebar.number_input("匹配要求 s (3-7)", 3, j, 4)
+# --- 1. 参数状态初始化 (Session State) ---
+default_params = {'m': 45, 'n': 9, 'k': 6, 's': 5, 'j': 5}
+for key, val in default_params.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+def randomize_parameters():
+    st.session_state.m = random.randint(45, 54)
+    st.session_state.n = random.randint(7, 25)
+    st.session_state.k = random.randint(4, 7)
+    st.session_state.s = random.randint(3, st.session_state.k)
+    st.session_state.j = random.randint(st.session_state.s, st.session_state.k)
+    if 'samples' in st.session_state:
+        del st.session_state['samples']
+
+# --- 2. 侧边栏：参数输入区 ---
+st.sidebar.header("🛠️ 1. 参数设置 (m, n, k, j, s)")
+
+st.sidebar.button("🎲 一键随机生成所有参数", on_click=randomize_parameters, use_container_width=True)
+st.sidebar.markdown("---")
+st.sidebar.markdown("👉 **或者手动微调参数：**")
+
+m = st.sidebar.number_input("总体样本数 m (45-54)", 45, 54, key='m')
+n = st.sidebar.number_input("选择样本数 n (7-25)", 7, 25, key='n')
+k = st.sidebar.number_input("小组容量 k (4-7)", 4, 7, key='k')
+j = st.sidebar.number_input("覆盖参考值 j (s ≤ j ≤ k)", 3, k, key='j')
+s = st.sidebar.number_input("匹配要求 s (3-7)", 3, j, key='s')
+
 runs = st.sidebar.slider("算法迭代次数 (寻找更优解)", 1, 10, 3)
 
-# 主界面：样本输入模式
-st.subheader("1. 确定初始样本池")
-input_mode = st.radio("选择样本产生方式", ["🎲 随机生成", "✍️ 手动输入"], horizontal=True)
+# --- 3. 主界面：样本产生区 ---
+st.subheader(f"2. 确定初始样本池 (从 {m} 中产生 {n} 个)")
+input_mode = st.radio("选择样本产生方式", ["🎲 随机生成样本", "✍️ 手动输入样本"], horizontal=True)
 
-if "🎲 随机生成" in input_mode:
-    if st.button("生成随机样本"):
+if "🎲 随机生成样本" in input_mode:
+    if st.button(f"生成 {n} 个随机样本"):
         st.session_state['samples'] = sorted(random.sample(range(1, m + 1), n))
 else:
     user_input = st.text_input(f"请输入 {n} 个数字（用空格分隔，范围 1-{m}）：")
@@ -152,14 +172,13 @@ else:
         except ValueError:
             st.error("输入格式有误，请确保输入的是纯数字。")
 
-# 执行算法与展示结果
+# --- 4. 执行算法与展示结果 ---
 if 'samples' in st.session_state:
     st.info(f"**当前选定样本池 (共 {n} 个):** \n {st.session_state['samples']}")
     
-    st.subheader("2. 运行优化算法")
+    st.subheader("3. 运行优化算法")
     if st.button("🚀 开始执行最优选择", use_container_width=True):
         
-        # 预估复杂度预警 (防止浏览器卡死)
         candidate_count = math.comb(n, k)
         if candidate_count > 100000:
             st.warning("⚠️ 当前参数组合空间极大，计算可能需要较长时间，请耐心等待...")
@@ -169,17 +188,13 @@ if 'samples' in st.session_state:
                 results, stats = solve(st.session_state['samples'], k, j, s, runs=runs)
                 st.success(f"✅ 计算完成！耗时: {stats['elapsed_seconds']:.3f} 秒")
                 
-                # 结果统计卡片展示
                 col1, col2, col3 = st.columns(3)
                 col1.metric("候选组合总数", stats['candidate_count'])
                 col2.metric("需要覆盖的目标数", stats['target_count'])
                 col3.metric("⭐ 最终精简组数", stats['final_result_count'])
                 
-                # 结果展示与文本生成
                 st.markdown("### 📊 最优组合结果")
                 result_text = ""
-                
-                # 用两列的格式整齐地展示结果
                 res_col1, res_col2 = st.columns(2)
                 for idx, res in enumerate(results):
                     line = f"**组 {idx+1}:** {res}"
@@ -187,11 +202,8 @@ if 'samples' in st.session_state:
                         res_col1.markdown(line)
                     else:
                         res_col2.markdown(line)
-                    
-                    # 按照之前 storage.py 的要求格式化文本，用于下载
                     result_text += f"{idx+1}. {','.join(map(str, res))}\n"
                 
-                # 生成符合作业规范的 DB txt 文件供下载
                 file_name = f"{m}-{n}-{k}-{j}-{s}-1-{len(results)}.txt"
                 st.download_button(
                     label="📂 下载标准化 DB 结果文件",
