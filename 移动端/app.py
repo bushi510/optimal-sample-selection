@@ -5,7 +5,7 @@ import math
 import time
 
 # ==========================================
-# 核心算法引擎 (GRASP + 逆向冗余剪枝)
+# 核心算法引擎 (整合了原 solver.py 和 utils.py)
 # ==========================================
 def generate_combinations(samples, r):
     return list(itertools.combinations(sorted(samples), r))
@@ -49,9 +49,8 @@ def greedy_set_cover(candidates, targets, coverage_map, randomized=True, top_n=5
                     scored_candidates.append((gain, candidate))
         
         if not scored_candidates:
-            raise RuntimeError("无法覆盖所有目标，请检查参数组合是否在数学上无解。")
+            raise RuntimeError("无法覆盖所有目标，请检查参数组合。")
 
-        # GRASP 随机化打破局部最优
         if randomized:
             scored_candidates.sort(key=lambda item: (-item[0], item[1]))
             top_candidates = scored_candidates[:max(1, top_n)]
@@ -63,7 +62,6 @@ def greedy_set_cover(candidates, targets, coverage_map, randomized=True, top_n=5
         selected_groups.append(chosen_candidate)
         selected_set.add(chosen_candidate)
         uncovered_targets -= coverage_map[chosen_candidate]
-        
     return selected_groups
 
 def check_all_targets_covered(selected_groups, targets, s):
@@ -75,7 +73,6 @@ def check_all_targets_covered(selected_groups, targets, s):
     return True
 
 def optimize_by_removing_redundant_groups(selected_groups, targets, s):
-    # 逆向剪枝：剔除冗余解，追求绝对的 "Minimal groups"
     optimized_groups = list(selected_groups)
     changed = True
     while changed:
@@ -88,27 +85,6 @@ def optimize_by_removing_redundant_groups(selected_groups, targets, s):
                 break
     return sorted(optimized_groups)
 
-# 🌟 新增：独立数学审计模块 (Independent Mathematical Auditor)
-def independent_audit(results, samples, j, s):
-    """
-    不依赖生成过程，直接从数学底层暴力检验最终结果的有效性。
-    """
-    all_targets = generate_combinations(samples, j)
-    result_sets = [set(g) for g in results]
-    
-    uncovered_count = 0
-    for target in all_targets:
-        target_set = set(target)
-        is_covered = any(len(target_set & res_set) >= s for res_set in result_sets)
-        if not is_covered:
-            uncovered_count += 1
-            
-    total = len(all_targets)
-    covered = total - uncovered_count
-    is_valid = (uncovered_count == 0)
-    
-    return is_valid, covered, total
-
 def solve(samples, k, j, s, runs=3):
     started_at = time.perf_counter()
     candidates = generate_combinations(samples, k)
@@ -116,9 +92,9 @@ def solve(samples, k, j, s, runs=3):
     coverage_map = build_coverage_map(candidates, targets, s)
 
     best_result = None
-    progress_bar = st.progress(0)
     
-    # 多轮迭代寻找逼近理论下界的最优解
+    # 增加进度条提示
+    progress_bar = st.progress(0)
     for run_index in range(1, runs + 1):
         raw_result = greedy_set_cover(candidates, targets, coverage_map, randomized=True)
         optimized_result = optimize_by_removing_redundant_groups(raw_result, targets, s)
@@ -127,126 +103,102 @@ def solve(samples, k, j, s, runs=3):
             best_result = optimized_result
             
         progress_bar.progress(run_index / runs)
-    progress_bar.empty()
+    progress_bar.empty() # 计算完成后清空进度条
 
     elapsed_seconds = time.perf_counter() - started_at
-    
-    # 调用独立审计
-    is_valid, covered_targets, total_targets = independent_audit(best_result, samples, j, s)
-    
-    if not is_valid:
-        raise RuntimeError("严重错误：独立审计检测到覆盖漏洞，数学模型未闭环！")
-
     stats = {
         "candidate_count": len(candidates),
-        "target_count": total_targets,
+        "target_count": len(targets),
         "final_result_count": len(best_result),
-        "elapsed_seconds": elapsed_seconds,
-        "is_valid": is_valid
+        "elapsed_seconds": elapsed_seconds
     }
     return best_result, stats
+
 
 # ==========================================
 # Streamlit 前端交互界面
 # ==========================================
-st.set_page_config(page_title="最优样本选择系统", layout="wide") # 调宽布局展示数据
+st.set_page_config(page_title="最优样本选择系统", layout="centered")
 
-st.title("🎯 最优样本选择系统 (学术严谨版)")
-st.markdown("基于 **GRASP (贪心随机自适应搜索)** 与逆向剪枝优化的组合设计工具。内置独立数学审计，确保 100% 覆盖率。")
+st.title("🎯 最优样本选择系统 (Web版)")
+st.markdown("基于 **GRASP (贪心随机自适应搜索)** 与逆向剪枝优化的组合设计工具。")
 
-# --- 1. 参数状态初始化 ---
-default_params = {'m': 45, 'n': 9, 'k': 6, 's': 5, 'j': 5}
-for key, val in default_params.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
+# 侧边栏：参数输入
+st.sidebar.header("🛠️ 参数设置")
+m = st.sidebar.number_input("总体样本数 m (45-54)", 45, 54, 45)
+n = st.sidebar.number_input("选择样本数 n (7-25)", 7, 25, 9)
+k = st.sidebar.number_input("小组容量 k (4-7)", 4, 7, 6)
+j = st.sidebar.number_input("覆盖参考值 j (s ≤ j ≤ k)", 3, k, 4)
+s = st.sidebar.number_input("匹配要求 s (3-7)", 3, j, 4)
+runs = st.sidebar.slider("算法迭代次数 (寻找更优解)", 1, 10, 3)
 
-def randomize_parameters():
-    st.session_state.m = random.randint(45, 54)
-    st.session_state.n = random.randint(7, 20) # 限制到20以内避免答辩现场等待过久
-    st.session_state.k = random.randint(4, 7)
-    st.session_state.s = random.randint(3, st.session_state.k)
-    st.session_state.j = random.randint(st.session_state.s, st.session_state.k)
-    if 'samples' in st.session_state:
-        del st.session_state['samples']
+# 主界面：样本输入模式
+st.subheader("1. 确定初始样本池")
+input_mode = st.radio("选择样本产生方式", ["🎲 随机生成", "✍️ 手动输入"], horizontal=True)
 
-# --- 2. 侧边栏：参数输入区 ---
-st.sidebar.header("🛠️ 1. 参数设置 (m, n, k, j, s)")
-st.sidebar.button("🎲 一键随机生成安全参数", on_click=randomize_parameters, use_container_width=True)
-st.sidebar.markdown("---")
-
-m = st.sidebar.number_input("总体样本数 m", 45, 54, key='m')
-n = st.sidebar.number_input("选择样本数 n", 7, 25, key='n')
-k = st.sidebar.number_input("小组容量 k", 4, 7, key='k')
-j = st.sidebar.number_input("覆盖参考值 j (s≤j≤k)", 3, k, key='j')
-s = st.sidebar.number_input("匹配要求 s", 3, j, key='s')
-
-runs = st.sidebar.slider("算法迭代次数 (越高越趋近数学下界)", 1, 10, 3)
-
-# --- 3. 主界面：样本产生区 ---
-st.subheader(f"2. 确定初始样本池 (从 1-{m} 中抽取 {n} 个)")
-input_mode = st.radio("样本产生方式", ["🎲 随机生成样本", "✍️ 手动输入样本"], horizontal=True)
-
-if "🎲 随机" in input_mode:
-    if st.button(f"生成 {n} 个随机样本"):
+if "🎲 随机生成" in input_mode:
+    if st.button("生成随机样本"):
         st.session_state['samples'] = sorted(random.sample(range(1, m + 1), n))
 else:
-    user_input = st.text_input(f"请输入 {n} 个数字（空格分隔）：")
+    user_input = st.text_input(f"请输入 {n} 个数字（用空格分隔，范围 1-{m}）：")
     if user_input:
         try:
-            parsed = sorted(list(set([int(x) for x in user_input.split()])))
-            if len(parsed) == n and all(1 <= x <= m for x in parsed):
-                st.session_state['samples'] = parsed
+            parsed_samples = sorted(list(set([int(x) for x in user_input.split()])))
+            if len(parsed_samples) == n and all(1 <= x <= m for x in parsed_samples):
+                st.session_state['samples'] = parsed_samples
+                st.success("样本解析成功！")
             else:
-                st.error("数字数量不符或包含越界/重复数值。")
-        except:
-            st.error("格式错误。")
+                st.error(f"请输入恰好 {n} 个不重复的数字，且范围在 1 到 {m} 之间。")
+        except ValueError:
+            st.error("输入格式有误，请确保输入的是纯数字。")
 
-# --- 4. 执行算法与展示结果 ---
+# 执行算法与展示结果
 if 'samples' in st.session_state:
-    st.info(f"**样本池:** {st.session_state['samples']}")
+    st.info(f"**当前选定样本池 (共 {n} 个):** \n {st.session_state['samples']}")
     
-    if st.button("🚀 开始执行最优解算", type="primary", use_container_width=True):
-        if math.comb(n, k) > 100000:
-            st.warning("⚠️ 组合空间极大，正在进行深度搜索，请稍候...")
+    st.subheader("2. 运行优化算法")
+    if st.button("🚀 开始执行最优选择", use_container_width=True):
+        
+        # 预估复杂度预警 (防止浏览器卡死)
+        candidate_count = math.comb(n, k)
+        if candidate_count > 100000:
+            st.warning("⚠️ 当前参数组合空间极大，计算可能需要较长时间，请耐心等待...")
             
-        with st.spinner("🧠 运算中：生成图论覆盖矩阵 -> GRASP迭代 -> 逆向剪枝优化..."):
+        with st.spinner("🧠 启发式算法计算中，正在寻找全局最优解..."):
             try:
                 results, stats = solve(st.session_state['samples'], k, j, s, runs=runs)
-                
-                # 🌟 答辩高光：数学验证面板
                 st.success(f"✅ 计算完成！耗时: {stats['elapsed_seconds']:.3f} 秒")
                 
-                st.markdown("### 🛡️ 独立数学验证报告 (Mathematical Audit)")
-                if stats['is_valid']:
-                    st.info(f"**验证通过！** 本次运算共产生了 **{stats['final_result_count']}** 组精简解。经过独立交叉验证，这 {stats['final_result_count']} 组解完美覆盖了全部 **{stats['target_count']}** 个 $j$-组合目标。覆盖率：**100%**。")
-                else:
-                    st.error("验证失败！存在未覆盖的漏洞。")
-
-                # 数据统计
+                # 结果统计卡片展示
                 col1, col2, col3 = st.columns(3)
-                col1.metric("候选组总量 C(n, k)", stats['candidate_count'])
-                col2.metric("覆盖目标量 C(n, j)", stats['target_count'])
-                col3.metric("⭐ 最优精简解", stats['final_result_count'])
+                col1.metric("候选组合总数", stats['candidate_count'])
+                col2.metric("需要覆盖的目标数", stats['target_count'])
+                col3.metric("⭐ 最终精简组数", stats['final_result_count'])
                 
-                # 结果展示
-                st.markdown("### 📊 最优组合矩阵")
-                res_col1, res_col2 = st.columns(2)
+                # 结果展示与文本生成
+                st.markdown("### 📊 最优组合结果")
                 result_text = ""
+                
+                # 用两列的格式整齐地展示结果
+                res_col1, res_col2 = st.columns(2)
                 for idx, res in enumerate(results):
                     line = f"**组 {idx+1}:** {res}"
                     if idx % 2 == 0:
                         res_col1.markdown(line)
                     else:
                         res_col2.markdown(line)
+                    
+                    # 按照之前 storage.py 的要求格式化文本，用于下载
                     result_text += f"{idx+1}. {','.join(map(str, res))}\n"
                 
-                # 下载按钮
+                # 生成符合作业规范的 DB txt 文件供下载
                 file_name = f"{m}-{n}-{k}-{j}-{s}-1-{len(results)}.txt"
                 st.download_button(
                     label="📂 下载标准化 DB 结果文件",
                     data=result_text,
                     file_name=file_name,
-                    mime="text/plain"
+                    mime="text/plain",
+                    use_container_width=True
                 )
             except Exception as e:
-                st.error(f"发生致命错误: {str(e)}")
+                st.error(f"计算过程中发生错误: {str(e)}")
